@@ -39,9 +39,9 @@ export const handler = async (event, context) => {
     // Allow for larger file size (500KB instead of 100KB)
     do {
       compressedBuffer = await image
-        .quality(quality)
         // Add slight sharpening to maintain crisp edges
         .sharpen(0.5)
+        .quality(quality)
         .getBufferAsync(Jimp.MIME_JPEG);
       quality -= 5;
     } while (compressedBuffer.length > 500 * 1024 && quality > 60); // Don't go below 60% quality
