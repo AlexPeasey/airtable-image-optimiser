@@ -23,18 +23,28 @@ export const handler = async (event, context) => {
     const response = await fetch(imageUrl);
     const imageBuffer = await response.buffer();
 
-    // Optimize the image using Jimp
+    // First, read the image
     let image = await Jimp.read(imageBuffer);
-    image = image.resize(1920, Jimp.AUTO);
 
-    // Compress the image to be under 100KB
-    let quality = 100;
+    // Maintain aspect ratio while resizing to 1920px width
+    // Only resize if the image is larger than 1920px width
+    if (image.getWidth() > 1920) {
+      image = image.resize(1920, Jimp.AUTO);
+    }
+
+    // Start with higher quality and larger file size limit
+    let quality = 85; // Start with better quality
     let compressedBuffer;
 
+    // Allow for larger file size (500KB instead of 100KB)
     do {
-      compressedBuffer = await image.quality(quality).getBufferAsync(Jimp.MIME_JPEG);
+      compressedBuffer = await image
+        .quality(quality)
+        // Add slight sharpening to maintain crisp edges
+        .sharpen(0.5)
+        .getBufferAsync(Jimp.MIME_JPEG);
       quality -= 5;
-    } while (compressedBuffer.length > 100 * 1024 && quality > 0);
+    } while (compressedBuffer.length > 500 * 1024 && quality > 60); // Don't go below 60% quality
 
     const bucketName = process.env.BUCKET_NAME;
     const bucket = storage.bucket(bucketName);
@@ -47,17 +57,17 @@ export const handler = async (event, context) => {
 
     // Generate a signed URL for the file
     const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
+      action: "read",
       expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 1 week
     });
 
     // Update Airtable record with the URL of the optimized image
     const airtableUrl = `https://api.airtable.com/v0/${baseId}/${tableName}/${recordId}`;
     const airtableResponse = await fetch(airtableUrl, {
-      method: 'PATCH',
+      method: "PATCH",
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         fields: {
@@ -72,7 +82,7 @@ export const handler = async (event, context) => {
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ message: 'Image optimized and uploaded successfully.' }),
+      body: JSON.stringify({ message: "Image optimized and uploaded successfully." }),
     };
   } catch (error) {
     return {
