@@ -9,6 +9,9 @@
     "path": "^0.12.7",
     "uuid": "^10.0.0"
   },
+  "scripts": {
+    "build": "echo 'No build required'"
+  },
   "name": "tus-image-optimiser",
   "version": "1.0.0",
   "main": "index.js",

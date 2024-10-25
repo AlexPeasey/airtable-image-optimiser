@@ -15,7 +15,7 @@ const storage = new Storage({
   },
 });
 
-exports.handler = async (event, context) => {
+export const handler = async (event, context) => {
   const { imageUrl, recordId, accessToken, baseId, tableName, targetField } = JSON.parse(event.body);
 
   try {

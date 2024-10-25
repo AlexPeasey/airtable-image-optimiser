@@ -1,9 +1,6 @@
-# example netlify.toml
 [build]
-  command = "yarn build"
   functions = "functions"
-  publish = ""
-
+  publish = "public"  # Add this even if empty
 
   ## Uncomment to use this redirect for Single Page Applications like create-react-app.
   ## Not needed for static site generators.
