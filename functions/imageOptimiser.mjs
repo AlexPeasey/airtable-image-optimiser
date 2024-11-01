@@ -1,5 +1,5 @@
 import fetch from "node-fetch";
-import sharp from 'sharp'; // Using sharp instead of Jimp for better performance
+import sharp from 'sharp';
 import { Storage } from "@google-cloud/storage";
 
 const credential = JSON.parse(Buffer.from(process.env.GOOGLE_SERVICE_KEY, "base64").toString());
@@ -13,14 +13,44 @@ const storage = new Storage({
 });
 
 export const handler = async (event, context) => {
-  const { imageUrl, recordId, accessToken, baseId, tableName } = JSON.parse(event.body);
+  // Add CORS headers
+  const headers = {
+    'Access-Control-Allow-Origin': '*', // Or your specific domain
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Content-Type': 'application/json'
+  };
+
+  // Handle preflight request
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers
+    };
+  }
 
   try {
-    // Fetch image once for both operations
+    if (!event.body) {
+      throw new Error('No body provided');
+    }
+
+    const { imageUrl, recordId, accessToken, baseId, tableName } = JSON.parse(event.body);
+
+    // Validate required fields
+    if (!imageUrl || !recordId || !accessToken || !baseId || !tableName) {
+      throw new Error('Missing required fields');
+    }
+
+    // Rest of your existing code...
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     const response = await fetch(imageUrl, { signal: controller.signal });
     clearTimeout(timeout);
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.statusText}`);
+    }
+
     const imageBuffer = await response.buffer();
 
     // Process both images in parallel
@@ -54,7 +84,7 @@ export const handler = async (event, context) => {
     const bucket = storage.bucket(bucketName);
 
     // Upload both images in parallel
-    const [mainFile, thumbnailFile] = await Promise.all([
+    await Promise.all([
       bucket.file(`main-${recordId}.jpg`).save(mainImage),
       bucket.file(`thumb-${recordId}.jpg`).save(thumbnailImage)
     ]);
@@ -71,7 +101,7 @@ export const handler = async (event, context) => {
       })
     ]);
 
-    // Update Airtable with both URLs in a single request
+    // Update Airtable with both URLs
     const airtableUrl = `https://api.airtable.com/v0/${baseId}/${tableName}/${recordId}`;
     const airtableController = new AbortController();
     const airtableTimeout = setTimeout(() => airtableController.abort(), 5000);
@@ -93,22 +123,29 @@ export const handler = async (event, context) => {
     clearTimeout(airtableTimeout);
 
     if (!airtableResponse.ok) {
-      throw new Error(`Failed to update Airtable: ${airtableResponse.statusText}`);
+      const errorText = await airtableResponse.text();
+      throw new Error(`Failed to update Airtable: ${errorText}`);
     }
 
     return {
       statusCode: 200,
+      headers,
       body: JSON.stringify({ 
         message: "Images optimized and uploaded successfully",
         mainUrl: mainSignedUrl,
         thumbnailUrl: thumbSignedUrl
       }),
     };
+
   } catch (error) {
     console.error('Error details:', error);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: error.message }),
+      headers,
+      body: JSON.stringify({ 
+        error: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      }),
     };
   }
 };
