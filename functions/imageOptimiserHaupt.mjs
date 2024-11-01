@@ -19,30 +19,26 @@ export const handler = async (event, context) => {
   const { imageUrl, recordId, accessToken, baseId, tableName, targetField } = JSON.parse(event.body);
 
   try {
-    // Fetch the image
-    const response = await fetch(imageUrl);
+    // Fetch the image with timeout
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    const response = await fetch(imageUrl, { signal: controller.signal });
+    clearTimeout(timeout);
     const imageBuffer = await response.buffer();
 
     // First, read the image
     let image = await Jimp.read(imageBuffer);
 
     // Maintain aspect ratio while resizing to 1920px width
-    // Only resize if the image is larger than 1920px width
     if (image.getWidth() > 1920) {
       image = image.resize(1920, Jimp.AUTO);
     }
 
-    // Start with higher quality and larger file size limit
-    let quality = 85; // Start with better quality
-    let compressedBuffer;
-
-    // Allow for larger file size (500KB instead of 100KB)
-    do {
-      compressedBuffer = await image
-        .quality(quality)
-        .getBufferAsync(Jimp.MIME_JPEG);
-      quality -= 5;
-    } while (compressedBuffer.length > 500 * 1024 && quality > 60); // Don't go below 60% quality
+    // Use a fixed quality setting instead of iterating
+    const compressedBuffer = await image
+      .sharpen(0.5)
+      .quality(70) // Fixed quality setting
+      .getBufferAsync(Jimp.MIME_JPEG);
 
     const bucketName = process.env.BUCKET_NAME;
     const bucket = storage.bucket(bucketName);
@@ -50,17 +46,25 @@ export const handler = async (event, context) => {
     const fileName = `optimized-image-${recordId}.jpg`;
     const file = bucket.file(fileName);
 
-    // Save the image to Google Cloud Storage
-    await file.save(compressedBuffer);
+    // Upload with a timeout
+    await Promise.race([
+      file.save(compressedBuffer),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Upload timeout')), 15000)
+      )
+    ]);
 
-    // Generate a signed URL for the file
+    // Generate a signed URL with shorter expiration
     const [signedUrl] = await file.getSignedUrl({
       action: "read",
-      expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 1 week
+      expires: Date.now() + 24 * 60 * 60 * 1000, // 1 day instead of week
     });
 
-    // Update Airtable record with the URL of the optimized image
+    // Update Airtable with timeout
     const airtableUrl = `https://api.airtable.com/v0/${baseId}/${tableName}/${recordId}`;
+    const airtableController = new AbortController();
+    const airtableTimeout = setTimeout(() => airtableController.abort(), 5000);
+    
     const airtableResponse = await fetch(airtableUrl, {
       method: "PATCH",
       headers: {
@@ -72,7 +76,9 @@ export const handler = async (event, context) => {
           [targetField]: [{ url: signedUrl }],
         },
       }),
+      signal: airtableController.signal,
     });
+    clearTimeout(airtableTimeout);
 
     if (!airtableResponse.ok) {
       throw new Error(`Failed to update Airtable: ${airtableResponse.statusText}`);
