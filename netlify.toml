@@ -1,7 +1,8 @@
-[build]
-  functions = "functions"
-  publish = "public"  # Add this even if empty
-
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["sharp"]
+  included_files = ["node_modules/sharp/**/*"]
+  timeout = 30
   ## Uncomment to use this redirect for Single Page Applications like create-react-app.
   ## Not needed for static site generators.
   #[[redirects]]
