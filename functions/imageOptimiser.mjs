@@ -1,12 +1,9 @@
 import fetch from "node-fetch";
-import Jimp from "jimp";
+import sharp from 'sharp';
 import { Storage } from "@google-cloud/storage";
-import { v4 as uuidv4 } from "uuid";
-import path from "path";
 
 const credential = JSON.parse(Buffer.from(process.env.GOOGLE_SERVICE_KEY, "base64").toString());
 
-// Configure Google Cloud Storage
 const storage = new Storage({
   projectId: process.env.GOOGLE_PROJECT_ID,
   credentials: {
@@ -16,68 +13,139 @@ const storage = new Storage({
 });
 
 export const handler = async (event, context) => {
-  const { imageUrl, recordId, accessToken, baseId, tableName, targetField } = JSON.parse(event.body);
+  // Add CORS headers
+  const headers = {
+    'Access-Control-Allow-Origin': '*', // Or your specific domain
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Content-Type': 'application/json'
+  };
+
+  // Handle preflight request
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers
+    };
+  }
 
   try {
-    // Fetch the image
-    const response = await fetch(imageUrl);
+    if (!event.body) {
+      throw new Error('No body provided');
+    }
+
+    const { imageUrl, recordId, accessToken, baseId, tableName } = JSON.parse(event.body);
+
+    // Validate required fields
+    if (!imageUrl || !recordId || !accessToken || !baseId || !tableName) {
+      throw new Error('Missing required fields');
+    }
+
+    // Rest of your existing code...
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const response = await fetch(imageUrl, { signal: controller.signal });
+    clearTimeout(timeout);
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.statusText}`);
+    }
+
     const imageBuffer = await response.buffer();
 
-    // Optimize the image using Jimp
-    let image = await Jimp.read(imageBuffer);
-    image = image.resize(560, Jimp.AUTO);
-
-    // Compress the image to be under 100KB
-    let quality = 100;
-    let compressedBuffer;
-
-    do {
-      compressedBuffer = await image.quality(quality).getBufferAsync(Jimp.MIME_JPEG);
-      quality -= 5;
-    } while (compressedBuffer.length > 100 * 1024 && quality > 0);
+    // Process both images in parallel
+    const [mainImage, thumbnailImage] = await Promise.all([
+      sharp(imageBuffer)
+        .resize(1920, null, { 
+          withoutEnlargement: true,
+          fit: 'inside'
+        })
+        .jpeg({ 
+          quality: 70,
+          progressive: true,
+          optimizeScans: true
+        })
+        .toBuffer(),
+      
+      sharp(imageBuffer)
+        .resize(560, null, { 
+          withoutEnlargement: true,
+          fit: 'inside'
+        })
+        .jpeg({ 
+          quality: 80,
+          progressive: true,
+          optimizeScans: true
+        })
+        .toBuffer()
+    ]);
 
     const bucketName = process.env.BUCKET_NAME;
     const bucket = storage.bucket(bucketName);
 
-    const fileName = `optimized-image-${recordId}.jpg`;
-    const file = bucket.file(fileName);
+    // Upload both images in parallel
+    await Promise.all([
+      bucket.file(`main-${recordId}.jpg`).save(mainImage),
+      bucket.file(`thumb-${recordId}.jpg`).save(thumbnailImage)
+    ]);
 
-    // Save the image to Google Cloud Storage
-    await file.save(compressedBuffer);
+    // Generate signed URLs in parallel
+    const [[mainSignedUrl], [thumbSignedUrl]] = await Promise.all([
+      bucket.file(`main-${recordId}.jpg`).getSignedUrl({
+        action: "read",
+        expires: Date.now() + 24 * 60 * 60 * 1000,
+      }),
+      bucket.file(`thumb-${recordId}.jpg`).getSignedUrl({
+        action: "read",
+        expires: Date.now() + 24 * 60 * 60 * 1000,
+      })
+    ]);
 
-    // Generate a signed URL for the file
-    const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 1 week
-    });
-
-    // Update Airtable record with the URL of the optimized image
+    // Update Airtable with both URLs
     const airtableUrl = `https://api.airtable.com/v0/${baseId}/${tableName}/${recordId}`;
+    const airtableController = new AbortController();
+    const airtableTimeout = setTimeout(() => airtableController.abort(), 5000);
+    
     const airtableResponse = await fetch(airtableUrl, {
-      method: 'PATCH',
+      method: "PATCH",
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         fields: {
-          [targetField]: [{ url: signedUrl }],
+          'Hauptprofilbild': [{ url: mainSignedUrl }],
+          'Thumbnail2x': [{ url: thumbSignedUrl }]
         },
       }),
+      signal: airtableController.signal,
     });
+    clearTimeout(airtableTimeout);
 
     if (!airtableResponse.ok) {
-      throw new Error(`Failed to update Airtable: ${airtableResponse.statusText}`);
+      const errorText = await airtableResponse.text();
+      throw new Error(`Failed to update Airtable: ${errorText}`);
     }
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ message: 'Image optimized and uploaded successfully.' }),
+      headers,
+      body: JSON.stringify({ 
+        message: "Images optimized and uploaded successfully",
+        mainUrl: mainSignedUrl,
+        thumbnailUrl: thumbSignedUrl
+      }),
     };
+
   } catch (error) {
+    console.error('Error details:', error);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: error.message }),
+      headers,
+      body: JSON.stringify({ 
+        error: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      }),
     };
   }
 };
