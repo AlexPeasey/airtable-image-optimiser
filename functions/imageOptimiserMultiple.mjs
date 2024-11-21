@@ -89,7 +89,7 @@ export const handler = async (event, context) => {
       },
       body: JSON.stringify({
         fields: {
-          'BilgalerieTEST': optimizedUrls
+          'Bildgalerie': optimizedUrls
         },
       }),
       signal: airtableController.signal,
